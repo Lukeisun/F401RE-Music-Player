@@ -1,0 +1,20 @@
+# Build artifacts
+build/
+app/build/
+app/compile_commands.json
+
+# Editor/tooling caches
+.cache/
+app/.cache/
+
+# Python virtual environment
+.venv/
+
+# West-managed dependencies (reproduced via west init/update)
+zephyr/
+modules/
+bootloader/
+tools/
+
+# Project docs (not tracking for now)
+AGENTS.md

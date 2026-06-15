@@ -1,0 +1,75 @@
+#include <zephyr/dt-bindings/gpio/st-morpho-header.h>
+&spi1 {
+    sdhc0: sdhc@0 {
+        compatible = "zephyr,sdhc-spi-slot";
+        reg = <0>;
+        status = "okay";
+        spi-max-frequency = <10000000>;
+        mmc {
+            compatible = "zephyr,sdmmc-disk";
+            disk-name = "SD";
+            status = "okay";
+        };
+    };
+};
+/ {
+    chosen {
+        zephyr,display = &ssd1306;
+    };
+};
+
+&i2c1 {
+    ssd1306: ssd1306@3c {
+        compatible = "solomon,ssd1306";
+        reg = <0x3c>;
+        width = <128>;
+        height = <64>;
+        segment-offset = <0>;
+        page-offset = <0>;
+        display-offset = <0>;
+        multiplex-ratio = <63>;
+        segment-remap;
+        com-invdir;
+        prechargep = <0x22>;
+    };
+};
+&i2c3 { status = "disabled"; };
+&plli2s {
+    div-m = <8>;
+    mul-n = <271>;
+    div-r = <2>;
+    clocks = <&clk_hse>;
+    status = "okay";
+};
+
+&i2s3 { 
+    pinctrl-0 = <&i2s3_ck_pb3 &i2s3_sd_pb5 &i2s3_ws_pa4>;
+    clocks = <&rcc STM32_CLOCK(APB1, 15)>,
+        <&rcc STM32_SRC_PLLI2S_R I2S_SEL(0)>;
+    pinctrl-names = "default";
+    status = "okay"; 
+};
+&dma1 { status = "okay"; };
+/ {
+    card_detect {
+        compatible = "gpio-keys";
+        cd_pin: cd_pin {
+            gpios = <&st_morpho_header ST_MORPHO_R_33 GPIO_ACTIVE_HIGH>;
+            label = "Card Detect";
+        };
+    };
+    select {
+        compatible = "gpio-keys";
+        select_pin: select_pin {
+            gpios = <&st_morpho_header ST_MORPHO_R_23 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+            label = "Select";
+        };
+    };
+    scroll {
+        compatible = "gpio-keys";
+        scroll_pin: scroll_pin {
+            gpios = <&st_morpho_header ST_MORPHO_R_21 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+            label = "Scroll";
+        };
+    };
+};
