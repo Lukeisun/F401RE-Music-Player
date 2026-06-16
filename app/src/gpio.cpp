@@ -29,7 +29,7 @@ void GPIO::isr(const struct device *dev, struct gpio_callback *cb,
 GPIO::GPIO(const struct gpio_dt_spec &gpio, k_work_q *work_q,
            k_timeout_t timeout, gpio_event_cb_t cb, void *ctx)
     : gpio(gpio), work_q(work_q), timeout(timeout), cb(cb), ctx(ctx) {
-  gpio_pin_configure_dt(&gpio, GPIO_INPUT);
+   gpio_pin_configure_dt(&gpio, GPIO_INPUT);
   gpio_pin_interrupt_configure_dt(&gpio, (GPIO_INT_EDGE_BOTH));
   gpio_init_callback(&cb_data, &GPIO::isr, BIT(gpio.pin));
   gpio_add_callback(gpio.port, &cb_data);

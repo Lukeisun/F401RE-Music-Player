@@ -1,10 +1,18 @@
 #include <zephyr/dt-bindings/gpio/st-morpho-header.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
+&dma1 { status = "okay"; };
+&dma2 { status = "okay"; };
 &spi1 {
+    dmas = <&dma2 0 3 (STM32_DMA_PERIPH_RX | STM32_DMA_PRIORITY_HIGH) STM32_DMA_FIFO_1_4>,
+           <&dma2 3 3 (STM32_DMA_PERIPH_TX | STM32_DMA_PRIORITY_HIGH) STM32_DMA_FIFO_1_4>;
+    dma-names = "rx", "tx";
     sdhc0: sdhc@0 {
         compatible = "zephyr,sdhc-spi-slot";
         reg = <0>;
         status = "okay";
         spi-max-frequency = <10000000>;
+        /* 3 (0/2) RX 3 (3/5) TX */
         mmc {
             compatible = "zephyr,sdmmc-disk";
             disk-name = "SD";
@@ -49,27 +57,25 @@
     pinctrl-names = "default";
     status = "okay"; 
 };
-&dma1 { status = "okay"; };
 / {
-    card_detect {
-        compatible = "gpio-keys";
-        cd_pin: cd_pin {
-            gpios = <&st_morpho_header ST_MORPHO_R_33 GPIO_ACTIVE_HIGH>;
-            label = "Card Detect";
-        };
-    };
-    select {
+    buttons {
         compatible = "gpio-keys";
         select_pin: select_pin {
-            gpios = <&st_morpho_header ST_MORPHO_R_23 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+            gpios = <&st_morpho_header ST_MORPHO_L_3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
             label = "Select";
+            zephyr,code = <INPUT_KEY_0>;
+        };
+        scroll_pin: scroll_pin {
+            gpios = <&st_morpho_header ST_MORPHO_L_1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+            label = "Scroll";
+            zephyr,code = <INPUT_KEY_1>;
         };
     };
-    scroll {
-        compatible = "gpio-keys";
-        scroll_pin: scroll_pin {
-            gpios = <&st_morpho_header ST_MORPHO_R_21 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
-            label = "Scroll";
-        };
+    longpress {
+        compatible = "zephyr,input-longpress";
+        input-codes = <INPUT_KEY_0>, <INPUT_KEY_1>;
+        short-codes = <INPUT_KEY_A>, <INPUT_KEY_B>;
+        long-codes = <INPUT_KEY_X>, <INPUT_KEY_Y>;
+        long-delay-ms = <3000>;
     };
 };

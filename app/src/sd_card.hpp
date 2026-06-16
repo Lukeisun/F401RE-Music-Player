@@ -13,7 +13,6 @@
 #define DISK_MOUNT_PT "/" DISK_DRIVE_NAME ":"
 #define MAX_DIRS 64
 #define MAX_FILES 64
-#define CD_NODE DT_NODELABEL(cd_pin)
 
 class SDCard {
 private:

@@ -4,10 +4,10 @@
 #include "zephyr/display/cfb.h"
 #include "zephyr/kernel.h"
 #include "zephyr/sys/printk.h"
+#include <zephyr/input/input.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(main);
-#define CD_NODE DT_NODELABEL(cd_pin)
 #define SELECT_NODE DT_NODELABEL(select_pin)
 #define SCROLL_NODE DT_NODELABEL(scroll_pin)
 #define WORKQ_STACK_SIZE 4096
@@ -23,14 +23,13 @@ static char selected_dir[MAX_FILE_NAME + 4 + 1];
 //   return min + (sys_rand32_get() % (max - min + 1));
 // }
 
-void select_cb(void *ctx, bool active) {
+void select_cb(bool long_press, void *ctx) {
   printk("select\n");
   int64_t press_start = k_uptime_get();
   static int64_t last_press = 0;
   auto gpio_ctx = static_cast<gpio_ctx_t *>(ctx);
   auto diff = (last_press - press_start);
   printk("%lldd\n", diff);
-  bool long_press = false;
   switch (gpio_ctx->state) {
   case STATE_DIR:
     gpio_ctx->file_cursor = 0;
@@ -58,9 +57,7 @@ void select_cb(void *ctx, bool active) {
   }
   last_press = press_start;
 }
-void scroll_cb(void *ctx, bool active) {
-  if (!active)
-    return;
+void scroll_cb(bool long_press, void *ctx) {
   printk("scroll\n");
   auto gpio_ctx = static_cast<gpio_ctx_t *>(ctx);
   switch (gpio_ctx->state) {
@@ -96,6 +93,40 @@ void scroll_cb(void *ctx, bool active) {
     break;
   }
 }
+static const struct device *const longpress_dev =
+    DEVICE_DT_GET(DT_PATH(longpress));
+static void longpress_cb(struct input_event *evt, void *user_data) {
+  if (evt->sync == 0) {
+    return;
+  }
+  bool long_press = false;
+  if (0 != evt->value) {
+    switch (evt->code) {
+    case INPUT_KEY_A:
+    case INPUT_KEY_B:
+      long_press = false;
+      break;
+    case INPUT_KEY_X:
+    case INPUT_KEY_Y:
+      long_press = true;
+      break;
+    default:
+      return;
+    }
+    switch (evt->code) {
+    case INPUT_KEY_A:
+    case INPUT_KEY_X:
+      select_cb(long_press, user_data);
+      break;
+    case INPUT_KEY_B:
+    case INPUT_KEY_Y:
+      scroll_cb(long_press, user_data);
+      break;
+    default:
+      return;
+    }
+  }
+}
 int main(void) {
   struct k_work_q workq;
   k_work_queue_init(&workq);
@@ -106,19 +137,14 @@ int main(void) {
   k_work_queue_init(&music_workq);
   k_work_queue_start(&music_workq, music_workq_stack,
                      K_THREAD_STACK_SIZEOF(music_workq_stack),
-                     K_PRIO_COOP(7), // high priority, cooperative
+                     K_PRIO_PREEMPT(7), // high priority, cooperative
                      NULL);
   const struct device *display = DEVICE_DT_GET(DT_CHOSEN(zephyr_display));
-  constexpr static const struct gpio_dt_spec select_gpio =
-      GPIO_DT_SPEC_GET(SELECT_NODE, gpios);
-  constexpr static const struct gpio_dt_spec scroll_gpio =
-      GPIO_DT_SPEC_GET(SCROLL_NODE, gpios);
   printk("init\n");
   SDCard sd{&workq, &music_workq};
-  struct gpio_ctx_t ctx{0, 0, 0, &sd.dir_count, &sd.file_count, STATE_DIR, &sd};
-
-  GPIO select{select_gpio, nullptr, K_MSEC(0), select_cb, &ctx};
-  GPIO scroll{scroll_gpio, nullptr, K_MSEC(0), scroll_cb, &ctx};
+  static struct gpio_ctx_t ctx{};
+  INPUT_CALLBACK_DEFINE(longpress_dev, longpress_cb, &ctx);
+  ctx = {0, 0, 0, &sd.dir_count, &sd.file_count, STATE_DIR, &sd};
   if (!device_is_ready(display)) {
     printk("Display not ready\n");
     return 0;
@@ -139,6 +165,7 @@ int main(void) {
   const auto max_line_width = (uint8_t)width / font_width;
   static char fname[64];
   fname[max_line_width] = 0;
+
   while (1) {
     cfb_framebuffer_clear(display, true);
     switch (ctx.state) {

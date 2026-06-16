@@ -1,26 +1,33 @@
 #include "sd_card.hpp"
 #include "zephyr/drivers/i2s.h"
+#include "zephyr/dt-bindings/gpio/gpio.h"
+#include "zephyr/dt-bindings/gpio/st-morpho-header.h"
 #include "zephyr/fs/fs.h"
 #include "zephyr/kernel.h"
 #include "zephyr/sys/printk.h"
 #include "zephyr/sys/util.h"
 #include <stdlib.h>
-#define BLOCK_SIZE 4096
-#define NUM_BLOCKS 12
-
-constexpr static const struct gpio_dt_spec cd_gpio =
-    GPIO_DT_SPEC_GET(CD_NODE, gpios);
+#define BLOCK_SIZE 2048
+#define NUM_BLOCKS 8
+// #define CD_NODE DT_NODELABEL(cd_pin)
+// constexpr static const struct gpio_dt_spec cd_gpio =
+//     GPIO_DT_SPEC_GET(CD_NODE, gpios);
+constexpr static const struct gpio_dt_spec cd_gpio = {
+    .port = DEVICE_DT_GET(DT_NODELABEL(gpiob)),
+    .pin = 14,
+    // .dt_flags = (GPIO_ACTIVE_HIGH, GPIO_PULL_UP)
+    .dt_flags = GPIO_ACTIVE_HIGH};
 K_MEM_SLAB_DEFINE(tx_0_mem_slab, WB_UP(BLOCK_SIZE), NUM_BLOCKS, WB_UP(32));
 LOG_MODULE_REGISTER(sd_card);
 // 1kHz sine wave lookup table (one full period at 44100/1000 = ~44 samples)
 // Amplitude ~50% of int16_t max to avoid clipping
 static const int16_t sine_table[] = {
-    0,     4560,  8981,  13126, 16870, 20101, 22725, 24665,
-    25864, 26290, 25935, 24814, 22961, 20432, 17300, 13651,
-    9586,  5215,  659,   -3964, -8527, -12905, -16980, -20642,
-    -23791, -26342, -28228, -29399, -29825, -29496, -28422,
-    -26631, -24166, -21090, -17478, -13419, -9013, -4366,
-    402,   5168,  9807,  14197, 18222, 21776, 24763, 27102,
+    0,      4560,   8981,   13126,  16870,  20101,  22725,  24665,
+    25864,  26290,  25935,  24814,  22961,  20432,  17300,  13651,
+    9586,   5215,   659,    -3964,  -8527,  -12905, -16980, -20642,
+    -23791, -26342, -28228, -29399, -29825, -29496, -28422, -26631,
+    -24166, -21090, -17478, -13419, -9013,  -4366,  402,    5168,
+    9807,   14197,  18222,  21776,  24763,  27102,
 };
 #define SINE_TABLE_LEN (sizeof(sine_table) / sizeof(sine_table[0]))
 
@@ -81,7 +88,8 @@ static void play_test_tone(void) {
     return;
   }
 
-  // Stream for ~3 seconds (44100 * 4 bytes/frame = 176400 bytes/sec, ~3s = 529200 bytes)
+  // Stream for ~3 seconds (44100 * 4 bytes/frame = 176400 bytes/sec, ~3s =
+  // 529200 bytes)
   uint32_t bytes_remaining = 529200;
   while (bytes_remaining > 0) {
     void *block;
@@ -100,13 +108,13 @@ static void play_test_tone(void) {
       i2s_write(dev_i2s, block, BLOCK_SIZE);
       i2s_trigger(dev_i2s, I2S_DIR_TX, I2S_TRIGGER_START);
     }
-    bytes_remaining -= (bytes_remaining >= BLOCK_SIZE) ? BLOCK_SIZE : bytes_remaining;
+    bytes_remaining -=
+        (bytes_remaining >= BLOCK_SIZE) ? BLOCK_SIZE : bytes_remaining;
   }
 
   i2s_trigger(dev_i2s, I2S_DIR_TX, I2S_TRIGGER_DRAIN);
   printk("Test tone DONE\n");
 }
-
 
 // Called when card inserted/removed
 void SDCard::card_detect_cb(void *ctx, bool active) {
@@ -126,7 +134,7 @@ void SDCard::music_cb(struct k_work *work) {
 
   // Uncomment the next line to play a test tone instead of WAV file.
   // This tests the I2S hardware path without involving the SD card.
-  play_test_tone(); return;
+  // play_test_tone(); return;
 
   auto self = CONTAINER_OF(work, SDCard, music_work);
   auto &file = self->file;
@@ -250,8 +258,8 @@ void SDCard::music_cb(struct k_work *work) {
     printk("Failed to configure I2S: %d\n", ret);
     return;
   }
-  printk("I2S configured: %u-bit, %u ch, %u Hz\n",
-         bits_per_sample, num_channels, sample_rate);
+  printk("I2S configured: %u-bit, %u ch, %u Hz\n", bits_per_sample,
+         num_channels, sample_rate);
 
   /* Prepare all TX blocks */
   for (tx_idx = 0; tx_idx < NUM_BLOCKS; tx_idx++) {
@@ -290,30 +298,7 @@ void SDCard::music_cb(struct k_work *work) {
     ret = i2s_write(dev_i2s, ready_block,
                     read); // instantly queue the pre-read block
     if (ret < 0) {
-      // Recover from underrun
-      i2s_trigger(dev_i2s, I2S_DIR_TX, I2S_TRIGGER_PREPARE);
-      i2s_write(dev_i2s, ready_block, read); // re-queue failed block
-
-      // Rebuild buffer (fill ~5 more blocks)
-      for (int i = 0; i < NUM_BLOCKS / 2 && to_read > 0; i++) {
-        k_mem_slab_alloc(&tx_0_mem_slab, &ready_block, K_FOREVER);
-        read = fs_read(&file, ready_block, BLOCK_SIZE);
-        if (read <= 0)
-          goto done;
-        to_read -= read;
-        i2s_write(dev_i2s, ready_block, read);
-      }
-
-      // Restart playback
-      i2s_trigger(dev_i2s, I2S_DIR_TX, I2S_TRIGGER_START);
-
-      // Pre-read for next iteration
-      k_mem_slab_alloc(&tx_0_mem_slab, &ready_block, K_FOREVER);
-      read = fs_read(&file, ready_block, BLOCK_SIZE);
-      if (read <= 0)
-        break;
-      to_read -= read;
-      continue;
+      printk("UNDERRUN\n");
     }
 
     k_mem_slab_alloc(&tx_0_mem_slab, &ready_block,
@@ -324,7 +309,6 @@ void SDCard::music_cb(struct k_work *work) {
       break;
     to_read -= read;
   };
-done:
   ret = i2s_trigger(dev_i2s, I2S_DIR_TX, I2S_TRIGGER_DRAIN);
   if (ret < 0) {
     printk("Failed to trigger drain\n");
