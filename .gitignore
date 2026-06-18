@@ -16,5 +16,11 @@ modules/
 bootloader/
 tools/
 
+# KiCad temporary/local files
+*~.lck
+~*.lck
+*.kicad_prl
+**/.history/
+
 # Project docs (not tracking for now)
 AGENTS.md
