@@ -15,7 +15,6 @@
 constexpr static const struct gpio_dt_spec cd_gpio = {
     .port = DEVICE_DT_GET(DT_NODELABEL(gpiob)),
     .pin = 14,
-    // .dt_flags = (GPIO_ACTIVE_HIGH, GPIO_PULL_UP)
     .dt_flags = GPIO_ACTIVE_HIGH};
 K_MEM_SLAB_DEFINE(tx_0_mem_slab, WB_UP(BLOCK_SIZE), NUM_BLOCKS, WB_UP(32));
 LOG_MODULE_REGISTER(sd_card);
