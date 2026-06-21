@@ -1,9 +1,12 @@
 #include "gpio.hpp"
+#include "mp_lvgl.hpp"
 #include "sd_card.hpp"
 #include "types.hpp"
-#include "zephyr/display/cfb.h"
 #include "zephyr/kernel.h"
 #include "zephyr/sys/printk.h"
+#include <lvgl.h>
+#include <lvgl_zephyr.h>
+#include <zephyr/drivers/display.h>
 #include <zephyr/input/input.h>
 #include <zephyr/logging/log.h>
 
@@ -14,14 +17,11 @@ LOG_MODULE_REGISTER(main);
 K_THREAD_STACK_DEFINE(workq_stack, WORKQ_STACK_SIZE);
 #define MUSIC_WORKQ_STACK_SIZE 8192
 K_THREAD_STACK_DEFINE(music_workq_stack, MUSIC_WORKQ_STACK_SIZE);
-#define MAX_DISPLAY_LINES 4
+#define MAX_DISPLAY_LINES 8 
 
 // Directory File
 // +4 len of disk mount pt +1 for / + 1 for null
 static char selected_dir[MAX_FILE_NAME + 4 + 1];
-// uint32_t random_in_range(uint32_t min, uint32_t max) {
-//   return min + (sys_rand32_get() % (max - min + 1));
-// }
 
 void select_cb(bool long_press, void *ctx) {
   printk("select\n");
@@ -37,20 +37,9 @@ void select_cb(bool long_press, void *ctx) {
     gpio_ctx->state = STATE_DIR_READ;
     break;
   case STATE_FILE:
-    // printk("%s\n", long_press ? "long" : "short");
-    // if (long_press) {
-    //   gpio_ctx->file_count = 0;
-    //   gpio_ctx->window_start = 0;
-    //   gpio_ctx->state = STATE_DIR;
-    //   break;
-    // }
     gpio_ctx->state = STATE_TO_PLAY;
     break;
   case STATE_TO_PLAY:
-    // if (long_press) {
-    //   gpio_ctx->state = STATE_FILE;
-    //   break;
-    // }
     break;
   default:
     break;
@@ -149,64 +138,153 @@ int main(void) {
     printk("Display not ready\n");
     return 0;
   }
-  cfb_framebuffer_init(display);
-  cfb_framebuffer_invert(display);
-  int height = cfb_get_display_parameter(display, CFB_DISPLAY_ROWS);
-  int width = cfb_get_display_parameter(display, CFB_DISPLAY_COLS);
-  uint8_t font_height, font_width;
-  const auto FONT_IDX = 0;
-  cfb_framebuffer_set_font(display, FONT_IDX);
-  // for (int i = 0; i < cfb_get_numof_fonts(display); i++) {
-  //   cfb_get_font_size(display, i, &font_width, &font_height);
-  //   printk("Font %d: %dx%d\n", i, font_height, font_width);
-  // }
-  // printk("Rows: %d, Width: %d", height, width);
-  cfb_get_font_size(display, FONT_IDX, &font_width, &font_height);
-  const auto max_line_width = (uint8_t)width / font_width;
-  static char fname[64];
-  fname[max_line_width] = 0;
+  display_blanking_off(display);
+
+  // --- LVGL UI setup ---
+  static lv_obj_t *list_labels[MAX_DISPLAY_LINES];
+  static lv_obj_t *now_playing_label;
+  static lv_style_t style_normal;
+  static lv_style_t style_highlight;
+
+  {
+    lv_lock_guard guard;
+
+    // Styles
+    lv_style_init(&style_normal);
+    lv_style_set_text_color(&style_normal, lv_color_white());
+    lv_style_set_bg_opa(&style_normal, LV_OPA_TRANSP);
+    lv_style_set_pad_ver(&style_normal, 4);
+    lv_style_set_pad_hor(&style_normal, 4);
+
+    lv_style_init(&style_highlight);
+    lv_style_set_text_color(&style_highlight, lv_color_black());
+    lv_style_set_bg_color(&style_highlight, lv_color_white());
+    lv_style_set_bg_opa(&style_highlight, LV_OPA_COVER);
+    lv_style_set_pad_ver(&style_highlight, 4);
+    lv_style_set_pad_hor(&style_highlight, 4);
+
+    // Black background
+    lv_obj_set_style_bg_color(lv_screen_active(), lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(lv_screen_active(), LV_OPA_COVER, 0);
+
+    // Create 4 list labels
+    for (int i = 0; i < MAX_DISPLAY_LINES; i++) {
+      list_labels[i] = lv_label_create(lv_screen_active());
+      lv_label_set_text(list_labels[i], "");
+      lv_obj_set_width(list_labels[i], 240);
+      lv_obj_set_pos(list_labels[i], 0, i * 40);
+      lv_obj_add_style(list_labels[i], &style_normal, 0);
+      lv_label_set_long_mode(list_labels[i], LV_LABEL_LONG_CLIP);
+    }
+
+    // Now playing label (hidden initially)
+    now_playing_label = lv_label_create(lv_screen_active());
+    lv_label_set_text(now_playing_label, "Now Playing");
+    lv_obj_align(now_playing_label, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_style(now_playing_label, &style_normal, 0);
+    lv_obj_add_flag(now_playing_label, LV_OBJ_FLAG_HIDDEN);
+
+    lv_timer_handler();
+  }
+
+  // --- Main loop ---
+  DISPLAY_STATE last_state = STATE_DIR;
+  uint8_t last_dir_cursor = 0xFF;
+  uint8_t last_file_cursor = 0xFF;
+  uint8_t last_window_start = 0xFF;
 
   while (1) {
-    cfb_framebuffer_clear(display, true);
-    switch (ctx.state) {
-    case STATE_DIR:
-      if (sd.dir_count != 0) {
-        for (int z = 0; z < MIN(sd.dir_count, 4); z++) {
-          auto index = (ctx.window_start + z) % sd.dir_count;
-          memcpy(fname, sd.dir_list[index].name, max_line_width);
-          cfb_print(display, fname, 0, z * font_height);
-          if (index == ctx.dir_cursor) {
-            cfb_invert_area(display, 0, z * font_height, width, font_height);
+    {
+      lv_lock_guard guard;
+
+      switch (ctx.state) {
+      case STATE_DIR:
+        if (ctx.state != last_state || ctx.dir_cursor != last_dir_cursor ||
+            ctx.window_start != last_window_start) {
+          // Show list labels, hide now playing
+          for (int i = 0; i < MAX_DISPLAY_LINES; i++) {
+            lv_obj_clear_flag(list_labels[i], LV_OBJ_FLAG_HIDDEN);
           }
-        }
-      }
-      break;
-    case STATE_DIR_READ: {
-      sd.lsdir(ctx.dir_cursor);
-      ctx.state = STATE_FILE;
-      break;
-    }
-    case STATE_FILE:
-      if (sd.file_count != 0) {
-        for (int z = 0; z < MIN(sd.file_count, 4); z++) {
-          auto index = (ctx.window_start + z) % sd.file_count;
-          memcpy(fname, sd.file_list[index].name, max_line_width);
-          cfb_print(display, fname, 0, z * font_height);
-          if (index == ctx.file_cursor) {
-            cfb_invert_area(display, 0, z * font_height, width, font_height);
+          lv_obj_add_flag(now_playing_label, LV_OBJ_FLAG_HIDDEN);
+
+          for (int z = 0; z < MAX_DISPLAY_LINES; z++) {
+            if (z < sd.dir_count) {
+              auto index = (ctx.window_start + z) % sd.dir_count;
+              lv_label_set_text(list_labels[z], sd.dir_list[index].name);
+              if (index == ctx.dir_cursor) {
+                lv_obj_remove_style(list_labels[z], &style_normal, 0);
+                lv_obj_add_style(list_labels[z], &style_highlight, 0);
+              } else {
+                lv_obj_remove_style(list_labels[z], &style_highlight, 0);
+                lv_obj_add_style(list_labels[z], &style_normal, 0);
+              }
+            } else {
+              lv_label_set_text(list_labels[z], "");
+              lv_obj_remove_style(list_labels[z], &style_highlight, 0);
+              lv_obj_add_style(list_labels[z], &style_normal, 0);
+            }
           }
+          last_dir_cursor = ctx.dir_cursor;
+          last_window_start = ctx.window_start;
         }
+        break;
+
+      case STATE_DIR_READ:
+        sd.lsdir(ctx.dir_cursor);
+        ctx.state = STATE_FILE;
+        last_file_cursor = 0xFF; // force redraw
+        break;
+
+      case STATE_FILE:
+        if (ctx.state != last_state || ctx.file_cursor != last_file_cursor ||
+            ctx.window_start != last_window_start) {
+          for (int i = 0; i < MAX_DISPLAY_LINES; i++) {
+            lv_obj_clear_flag(list_labels[i], LV_OBJ_FLAG_HIDDEN);
+          }
+          lv_obj_add_flag(now_playing_label, LV_OBJ_FLAG_HIDDEN);
+
+          for (int z = 0; z < MAX_DISPLAY_LINES; z++) {
+            if (z < sd.file_count) {
+              auto index = (ctx.window_start + z) % sd.file_count;
+              lv_label_set_text(list_labels[z], sd.file_list[index].name);
+              if (index == ctx.file_cursor) {
+                lv_obj_remove_style(list_labels[z], &style_normal, 0);
+                lv_obj_add_style(list_labels[z], &style_highlight, 0);
+              } else {
+                lv_obj_remove_style(list_labels[z], &style_highlight, 0);
+                lv_obj_add_style(list_labels[z], &style_normal, 0);
+              }
+            } else {
+              lv_label_set_text(list_labels[z], "");
+              lv_obj_remove_style(list_labels[z], &style_highlight, 0);
+              lv_obj_add_style(list_labels[z], &style_normal, 0);
+            }
+          }
+          last_file_cursor = ctx.file_cursor;
+          last_window_start = ctx.window_start;
+        }
+        break;
+
+      case STATE_TO_PLAY:
+        sd.read_file(ctx.dir_cursor, ctx.file_cursor);
+        ctx.state = STATE_PLAYING;
+      case STATE_PLAYING:
+        if (ctx.state != last_state) {
+          // Hide list, show now playing
+          for (int i = 0; i < MAX_DISPLAY_LINES; i++) {
+            lv_obj_add_flag(list_labels[i], LV_OBJ_FLAG_HIDDEN);
+          }
+          lv_obj_clear_flag(now_playing_label, LV_OBJ_FLAG_HIDDEN);
+          lv_label_set_text(now_playing_label,
+                           sd.file_list[ctx.file_cursor].name);
+        }
+        break;
       }
-      break;
-    case STATE_TO_PLAY:
-      sd.read_file(ctx.dir_cursor, ctx.file_cursor);
-      ctx.state = STATE_PLAYING;
-      break;
-    case STATE_PLAYING:
-      cfb_print(display, "Now Playing", 0, 0);
+
+      last_state = ctx.state;
+      lv_timer_handler();
     }
-    cfb_framebuffer_finalize(display);
-    k_sleep(K_MSEC(1000));
+    k_msleep(100);
   }
   return 0;
 }

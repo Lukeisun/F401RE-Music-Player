@@ -8,7 +8,7 @@
 #include "zephyr/sys/util.h"
 #include <stdlib.h>
 #define BLOCK_SIZE 2048
-#define NUM_BLOCKS 8
+#define NUM_BLOCKS 4
 // #define CD_NODE DT_NODELABEL(cd_pin)
 // constexpr static const struct gpio_dt_spec cd_gpio =
 //     GPIO_DT_SPEC_GET(CD_NODE, gpios);
@@ -465,6 +465,7 @@ int SDCard::get_dirs(const char *path) {
     if (entry.type == FS_DIR_ENTRY_DIR) {
       struct directory_entries dir;
       memcpy(dir.name, entry.name, MAX_FILE_NAME);
+      printk("\t%s\n",entry.name);
       SDCard::dir_list[dir_count++] = dir;
     }
     count++;

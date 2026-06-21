@@ -1,17 +1,27 @@
 #include <zephyr/dt-bindings/gpio/st-morpho-header.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/mipi_dbi/mipi_dbi.h>
+#include <zephyr/dt-bindings/display/panel.h>
 
-&dma1 { status = "okay"; };
-&dma2 { status = "okay"; };
+&dma1 {
+    status = "okay";
+};
+
+&dma2 {
+    status = "okay";
+};
+
 &spi1 {
     dmas = <&dma2 0 3 (STM32_DMA_PERIPH_RX | STM32_DMA_PRIORITY_HIGH) STM32_DMA_FIFO_1_4>,
            <&dma2 3 3 (STM32_DMA_PERIPH_TX | STM32_DMA_PRIORITY_HIGH) STM32_DMA_FIFO_1_4>;
     dma-names = "rx", "tx";
+
     sdhc0: sdhc@0 {
         compatible = "zephyr,sdhc-spi-slot";
         reg = <0>;
         status = "okay";
         spi-max-frequency = <10000000>;
+
         /* 3 (0/2) RX 3 (3/5) TX */
         mmc {
             compatible = "zephyr,sdmmc-disk";
@@ -20,28 +30,60 @@
         };
     };
 };
+
+&spi2 {
+    pinctrl-0 = <&spi2_sck_pb10 &spi2_miso_pc2 &spi2_mosi_pc3>;
+    pinctrl-names = "default";
+    status = "okay";
+    cs-gpios = <&gpiob 9 GPIO_ACTIVE_LOW>; 
+};
+
 / {
+    mipi_dbi_st7789v {
+        compatible = "zephyr,mipi-dbi-spi";
+        spi-dev = <&spi2>;
+        dc-gpios = <&gpioc 0 GPIO_ACTIVE_HIGH>;    
+        /* reset-gpios = <&gpioX Y GPIO_ACTIVE_LOW>;   */
+        write-only;
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        st7789v_display: st7789v@0 {
+            compatible = "sitronix,st7789v";
+            mipi-max-frequency = <8000000>;
+            reg = <0>;
+            width = <240>;
+            height = <320>;
+            x-offset = <0>;
+            y-offset = <0>;
+            vcom = <0x19>;
+            gctrl = <0x35>;
+            vrhs = <0x12>;
+            vdvs = <0x20>;
+            mdac = <0x08>;
+            gamma = <0x01>;
+            pixel-format = <PANEL_PIXEL_FORMAT_RGB_565>;
+            lcm = <0x2c>;
+            porch-param = [0c 0c 00 33 33];
+            cmd2en-param = [5a 69 02 01];
+            pwctrl1-param = [a4 a1];
+            pvgam-param = [d0 04 0d 11 13 2b 3f 54 4c 18 0d 0b 1f 23];
+            nvgam-param = [d0 04 0c 11 13 2c 3f 44 51 2f 1f 1f 20 23];
+            ram-param = [00 f0];
+            rgb-param = [cd 08 14];
+            mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+        };
+    };
+
     chosen {
-        zephyr,display = &ssd1306;
+        zephyr,display = &st7789v_display;
     };
 };
 
-&i2c1 {
-    ssd1306: ssd1306@3c {
-        compatible = "solomon,ssd1306";
-        reg = <0x3c>;
-        width = <128>;
-        height = <64>;
-        segment-offset = <0>;
-        page-offset = <0>;
-        display-offset = <0>;
-        multiplex-ratio = <63>;
-        segment-remap;
-        com-invdir;
-        prechargep = <0x22>;
-    };
+&i2c3 {
+    status = "disabled";
 };
-&i2c3 { status = "disabled"; };
+
 &plli2s {
     div-m = <8>;
     mul-n = <271>;
@@ -53,24 +95,28 @@
 &i2s3 { 
     pinctrl-0 = <&i2s3_ck_pb3 &i2s3_sd_pb5 &i2s3_ws_pa4>;
     clocks = <&rcc STM32_CLOCK(APB1, 15)>,
-        <&rcc STM32_SRC_PLLI2S_R I2S_SEL(0)>;
+             <&rcc STM32_SRC_PLLI2S_R I2S_SEL(0)>;
     pinctrl-names = "default";
     status = "okay"; 
 };
+
 / {
     buttons {
         compatible = "gpio-keys";
+
         select_pin: select_pin {
             gpios = <&st_morpho_header ST_MORPHO_L_3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
             label = "Select";
             zephyr,code = <INPUT_KEY_0>;
         };
+
         scroll_pin: scroll_pin {
             gpios = <&st_morpho_header ST_MORPHO_L_1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
             label = "Scroll";
             zephyr,code = <INPUT_KEY_1>;
         };
     };
+
     longpress {
         compatible = "zephyr,input-longpress";
         input-codes = <INPUT_KEY_0>, <INPUT_KEY_1>;
