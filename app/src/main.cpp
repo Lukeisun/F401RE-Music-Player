@@ -17,7 +17,7 @@ LOG_MODULE_REGISTER(main);
 K_THREAD_STACK_DEFINE(workq_stack, WORKQ_STACK_SIZE);
 #define MUSIC_WORKQ_STACK_SIZE 8192
 K_THREAD_STACK_DEFINE(music_workq_stack, MUSIC_WORKQ_STACK_SIZE);
-#define MAX_DISPLAY_LINES 8 
+#define MAX_DISPLAY_LINES 8
 
 // Directory File
 // +4 len of disk mount pt +1 for / + 1 for null
@@ -143,6 +143,12 @@ int main(void) {
   // --- LVGL UI setup ---
   static lv_obj_t *list_labels[MAX_DISPLAY_LINES];
   static lv_obj_t *now_playing_label;
+  static lv_obj_t *total_duration_label;
+  static char duration_str[9];
+  static lv_obj_t *total_elapsed_label;
+  static char elapsed_str[9];
+  static lv_obj_t *progress_container;
+  static lv_obj_t *progress_bar;
   static lv_style_t style_normal;
   static lv_style_t style_highlight;
 
@@ -167,7 +173,7 @@ int main(void) {
     lv_obj_set_style_bg_color(lv_screen_active(), lv_color_black(), 0);
     lv_obj_set_style_bg_opa(lv_screen_active(), LV_OPA_COVER, 0);
 
-    // Create 4 list labels
+    // Create n list labels
     for (int i = 0; i < MAX_DISPLAY_LINES; i++) {
       list_labels[i] = lv_label_create(lv_screen_active());
       lv_label_set_text(list_labels[i], "");
@@ -180,9 +186,49 @@ int main(void) {
     // Now playing label (hidden initially)
     now_playing_label = lv_label_create(lv_screen_active());
     lv_label_set_text(now_playing_label, "Now Playing");
-    lv_obj_align(now_playing_label, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(now_playing_label, LV_ALIGN_TOP_MID, 0, 4);
     lv_obj_add_style(now_playing_label, &style_normal, 0);
     lv_obj_add_flag(now_playing_label, LV_OBJ_FLAG_HIDDEN);
+
+    // Progress container: elapsed | bar | total, aligned to bottom
+    progress_container = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(progress_container, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_align(progress_container, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_flex_flow(progress_container, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(progress_container, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_bg_opa(progress_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(progress_container, 0, 0);
+    lv_obj_set_style_pad_all(progress_container, 2, 0);
+    lv_obj_add_flag(progress_container, LV_OBJ_FLAG_HIDDEN);
+
+    // Measure max time label width dynamically from font metrics
+    lv_point_t time_size;
+    lv_text_get_size(&time_size, "00:00:00", lv_font_get_default(), 0, 0,
+                     LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    int32_t time_label_width = time_size.x + 8; // +8 for pad_hor (4px each side)
+
+    // Elapsed time label (inside container)
+    total_elapsed_label = lv_label_create(progress_container);
+    lv_label_set_text_static(total_elapsed_label, elapsed_str);
+    lv_obj_add_style(total_elapsed_label, &style_normal, 0);
+    lv_obj_set_width(total_elapsed_label, time_label_width);
+
+    // Progress bar (inside container, fills remaining space)
+    progress_bar = lv_bar_create(progress_container);
+    lv_obj_set_flex_grow(progress_bar, 1);
+    lv_obj_set_height(progress_bar, 8);
+    lv_bar_set_range(progress_bar, 0, 100);
+    lv_bar_set_value(progress_bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(progress_bar, lv_color_make(40, 40, 40), 0);
+    lv_obj_set_style_bg_color(progress_bar, lv_color_white(),
+                              LV_PART_INDICATOR);
+
+    // Total duration label (inside container)
+    total_duration_label = lv_label_create(progress_container);
+    lv_label_set_text_static(total_duration_label, duration_str);
+    lv_obj_add_style(total_duration_label, &style_normal, 0);
+    lv_obj_set_width(total_duration_label, time_label_width);
 
     lv_timer_handler();
   }
@@ -206,6 +252,7 @@ int main(void) {
             lv_obj_clear_flag(list_labels[i], LV_OBJ_FLAG_HIDDEN);
           }
           lv_obj_add_flag(now_playing_label, LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(progress_container, LV_OBJ_FLAG_HIDDEN);
 
           for (int z = 0; z < MAX_DISPLAY_LINES; z++) {
             if (z < sd.dir_count) {
@@ -242,6 +289,7 @@ int main(void) {
             lv_obj_clear_flag(list_labels[i], LV_OBJ_FLAG_HIDDEN);
           }
           lv_obj_add_flag(now_playing_label, LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(progress_container, LV_OBJ_FLAG_HIDDEN);
 
           for (int z = 0; z < MAX_DISPLAY_LINES; z++) {
             if (z < sd.file_count) {
@@ -274,9 +322,25 @@ int main(void) {
           for (int i = 0; i < MAX_DISPLAY_LINES; i++) {
             lv_obj_add_flag(list_labels[i], LV_OBJ_FLAG_HIDDEN);
           }
+          k_sem_take(&sd.header_ready, K_FOREVER);
+          sd.time_str(duration_str, atomic_get(&sd.total_time));
+          lv_label_set_text_static(total_duration_label, duration_str);
           lv_obj_clear_flag(now_playing_label, LV_OBJ_FLAG_HIDDEN);
+          lv_obj_clear_flag(progress_container, LV_OBJ_FLAG_HIDDEN);
           lv_label_set_text(now_playing_label,
-                           sd.file_list[ctx.file_cursor].name);
+                            sd.file_list[ctx.file_cursor].name);
+        }
+        {
+          uint32_t elapsed = atomic_get(&sd.elapsed_time);
+          uint32_t total = atomic_get(&sd.total_time);
+          sd.time_str(elapsed_str, elapsed);
+          lv_label_set_text_static(total_elapsed_label, elapsed_str);
+          if (total > 0) {
+            int pct = (int)((elapsed * 100) / total);
+            if (pct > 100)
+              pct = 100;
+            lv_bar_set_value(progress_bar, pct, LV_ANIM_OFF);
+          }
         }
         break;
       }

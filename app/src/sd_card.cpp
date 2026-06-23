@@ -4,10 +4,10 @@
 #include "zephyr/dt-bindings/gpio/st-morpho-header.h"
 #include "zephyr/fs/fs.h"
 #include "zephyr/kernel.h"
+#include "zephyr/sys/atomic.h"
 #include "zephyr/sys/printk.h"
 #include "zephyr/sys/util.h"
-#include <stdlib.h>
-#define BLOCK_SIZE 2048
+#define BLOCK_SIZE 4096
 #define NUM_BLOCKS 4
 // #define CD_NODE DT_NODELABEL(cd_pin)
 // constexpr static const struct gpio_dt_spec cd_gpio =
@@ -18,103 +18,6 @@ constexpr static const struct gpio_dt_spec cd_gpio = {
     .dt_flags = GPIO_ACTIVE_HIGH};
 K_MEM_SLAB_DEFINE(tx_0_mem_slab, WB_UP(BLOCK_SIZE), NUM_BLOCKS, WB_UP(32));
 LOG_MODULE_REGISTER(sd_card);
-// 1kHz sine wave lookup table (one full period at 44100/1000 = ~44 samples)
-// Amplitude ~50% of int16_t max to avoid clipping
-static const int16_t sine_table[] = {
-    0,      4560,   8981,   13126,  16870,  20101,  22725,  24665,
-    25864,  26290,  25935,  24814,  22961,  20432,  17300,  13651,
-    9586,   5215,   659,    -3964,  -8527,  -12905, -16980, -20642,
-    -23791, -26342, -28228, -29399, -29825, -29496, -28422, -26631,
-    -24166, -21090, -17478, -13419, -9013,  -4366,  402,    5168,
-    9807,   14197,  18222,  21776,  24763,  27102,
-};
-#define SINE_TABLE_LEN (sizeof(sine_table) / sizeof(sine_table[0]))
-
-// Generate a test tone directly through I2S (no SD card involved).
-// Plays a 1kHz sine wave for ~3 seconds.
-static void play_test_tone(void) {
-  const struct device *dev_i2s = DEVICE_DT_GET(DT_NODELABEL(i2s3));
-  struct i2s_config i2s_cfg;
-  void *tx_block[NUM_BLOCKS];
-  int ret;
-
-  if (!device_is_ready(dev_i2s)) {
-    printk("I2S device not ready\n");
-    return;
-  }
-
-  i2s_cfg.word_size = 16U;
-  i2s_cfg.channels = 2U;
-  i2s_cfg.format = I2S_FMT_DATA_FORMAT_I2S;
-  i2s_cfg.frame_clk_freq = 44100;
-  i2s_cfg.block_size = BLOCK_SIZE;
-  i2s_cfg.timeout = 2000;
-  i2s_cfg.options = I2S_OPT_FRAME_CLK_CONTROLLER | I2S_OPT_BIT_CLK_CONTROLLER;
-  i2s_cfg.mem_slab = &tx_0_mem_slab;
-
-  ret = i2s_configure(dev_i2s, I2S_DIR_TX, &i2s_cfg);
-  if (ret < 0) {
-    printk("Failed to configure I2S for test tone: %d\n", ret);
-    return;
-  }
-
-  // Fill blocks with sine wave data
-  uint32_t sample_idx = 0;
-  for (int b = 0; b < NUM_BLOCKS; b++) {
-    ret = k_mem_slab_alloc(&tx_0_mem_slab, &tx_block[b], K_FOREVER);
-    if (ret < 0) {
-      printk("Failed to alloc test tone block\n");
-      return;
-    }
-    auto buf = static_cast<int16_t *>(tx_block[b]);
-    // BLOCK_SIZE / 4 = number of stereo frames per block (2 bytes * 2 channels)
-    for (int i = 0; i < BLOCK_SIZE / 4; i++) {
-      int16_t sample = sine_table[sample_idx % SINE_TABLE_LEN];
-      buf[i * 2] = sample;     // left
-      buf[i * 2 + 1] = sample; // right
-      sample_idx++;
-    }
-    ret = i2s_write(dev_i2s, tx_block[b], BLOCK_SIZE);
-    if (ret < 0) {
-      printk("Failed to write test tone block\n");
-      return;
-    }
-  }
-
-  ret = i2s_trigger(dev_i2s, I2S_DIR_TX, I2S_TRIGGER_START);
-  if (ret < 0) {
-    printk("Failed to start test tone\n");
-    return;
-  }
-
-  // Stream for ~3 seconds (44100 * 4 bytes/frame = 176400 bytes/sec, ~3s =
-  // 529200 bytes)
-  uint32_t bytes_remaining = 529200;
-  while (bytes_remaining > 0) {
-    void *block;
-    k_mem_slab_alloc(&tx_0_mem_slab, &block, K_FOREVER);
-    auto buf = static_cast<int16_t *>(block);
-    for (int i = 0; i < BLOCK_SIZE / 4; i++) {
-      int16_t sample = sine_table[sample_idx % SINE_TABLE_LEN];
-      buf[i * 2] = sample;
-      buf[i * 2 + 1] = sample;
-      sample_idx++;
-    }
-    ret = i2s_write(dev_i2s, block, BLOCK_SIZE);
-    if (ret < 0) {
-      printk("Test tone write failed, recovering\n");
-      i2s_trigger(dev_i2s, I2S_DIR_TX, I2S_TRIGGER_PREPARE);
-      i2s_write(dev_i2s, block, BLOCK_SIZE);
-      i2s_trigger(dev_i2s, I2S_DIR_TX, I2S_TRIGGER_START);
-    }
-    bytes_remaining -=
-        (bytes_remaining >= BLOCK_SIZE) ? BLOCK_SIZE : bytes_remaining;
-  }
-
-  i2s_trigger(dev_i2s, I2S_DIR_TX, I2S_TRIGGER_DRAIN);
-  printk("Test tone DONE\n");
-}
-
 // Called when card inserted/removed
 void SDCard::card_detect_cb(void *ctx, bool active) {
   static int last_state = -1;
@@ -136,6 +39,8 @@ void SDCard::music_cb(struct k_work *work) {
   // play_test_tone(); return;
 
   auto self = CONTAINER_OF(work, SDCard, music_work);
+  atomic_set(&total_time, 0);
+  atomic_set(&elapsed_time, 0);
   auto &file = self->file;
   char bytes[64];
   void *tx_block[NUM_BLOCKS];
@@ -176,6 +81,7 @@ void SDCard::music_cb(struct k_work *work) {
   fs_read(&file, bytes, 4);
   uint32_t chunk_size = (uint8_t)bytes[0] | ((uint8_t)bytes[1] << 8) |
                         ((uint8_t)bytes[2] << 16) | ((uint8_t)bytes[3] << 24);
+  printk("test\n");
   printk("fmt chunk_size: %u\n", chunk_size);
 
   // audio format (1 = PCM)
@@ -241,6 +147,28 @@ void SDCard::music_cb(struct k_work *work) {
   uint32_t to_read = (uint8_t)bytes[0] | ((uint8_t)bytes[1] << 8) |
                      ((uint8_t)bytes[2] << 16) | ((uint8_t)bytes[3] << 24);
   printk("data size: %u\n", to_read);
+  auto duration =
+      to_read / (sample_rate * num_channels * (bits_per_sample / 8));
+  atomic_set(&total_time, duration);
+  k_sem_give(&self->header_ready);
+  {
+    uint32_t bench_start = k_uptime_get_32();
+    uint32_t bench_bytes = 0;
+    void *bench_buf;
+    k_mem_slab_alloc(&tx_0_mem_slab, &bench_buf, K_FOREVER);
+    for (int i = 0; i < 64; i++) { // 64 x 4096 = 256 KB
+      int r = fs_read(&file, bench_buf, BLOCK_SIZE);
+      if (r <= 0)
+        break;
+      bench_bytes += r;
+    }
+    uint32_t bench_elapsed = k_uptime_get_32() - bench_start;
+    printk("Benchmark: %u bytes in %u ms = %u KB/s\n", bench_bytes,
+           bench_elapsed, bench_bytes / bench_elapsed);
+    k_mem_slab_free(&tx_0_mem_slab, bench_buf);
+    to_read -= bench_bytes; // skip the bytes we already read (don't seek back)
+  }
+  // --- End benchmark ---
 
   // --- Configure I2S from WAV header ---
   i2s_cfg.word_size = bits_per_sample;
@@ -293,17 +221,33 @@ void SDCard::music_cb(struct k_work *work) {
   }
   // i2s_write
   printk("to_read before loop %d\n", to_read);
+  uint32_t start = k_cycle_get_32();
+  uint32_t elapsed_us = k_cycle_get_32();
   while (to_read > 0) {
     ret = i2s_write(dev_i2s, ready_block,
                     read); // instantly queue the pre-read block
+    duration = to_read / (sample_rate * num_channels * (bits_per_sample / 8));
+    atomic_set(&self->elapsed_time, atomic_get(&self->total_time) - duration);
     if (ret < 0) {
-      printk("UNDERRUN\n");
+      printk("UNDERRUN - recovering\n");
+      i2s_trigger(dev_i2s, I2S_DIR_TX, I2S_TRIGGER_PREPARE);
+      // Re-fill queue with current ready_block + read a few more
+      i2s_write(dev_i2s, ready_block, read);
+      // Alloc and read next blocks to pre-fill...
+      i2s_trigger(dev_i2s, I2S_DIR_TX, I2S_TRIGGER_START);
     }
-
-    k_mem_slab_alloc(&tx_0_mem_slab, &ready_block,
-                     K_FOREVER); // wait for DMA to free one
-    read = fs_read(&file, ready_block,
-                   BLOCK_SIZE); // read next (slow, but queue has ~10 blocks)
+    start = k_cycle_get_32();
+    k_mem_slab_alloc(&tx_0_mem_slab, &ready_block, K_FOREVER);
+    elapsed_us = k_cyc_to_us_floor32(k_cycle_get_32() - start);
+    if (elapsed_us > 50000) {
+      printk("SLOW ALLOC: %u us\n", elapsed_us);
+    }
+    start = k_cycle_get_32();
+    read = fs_read(&file, ready_block, BLOCK_SIZE);
+    elapsed_us = k_cyc_to_us_floor32(k_cycle_get_32() - start);
+    if (elapsed_us > 50000) { // only print if > 50ms
+      printk("SLOW READ: %u us\n", elapsed_us);
+    }
     if (read <= 0)
       break;
     to_read -= read;
@@ -320,6 +264,7 @@ SDCard::SDCard(struct k_work_q *workq, struct k_work_q *music_workq)
     : card_detect(cd_gpio, workq, K_MSEC(50), card_detect_cb, this),
       workq(workq), music_workq(music_workq) {
   k_work_init(&this->music_work, &SDCard::music_cb);
+  k_sem_init(&header_ready, 0, 1);
   this->mount();
 }
 int SDCard::mount() {
@@ -465,7 +410,7 @@ int SDCard::get_dirs(const char *path) {
     if (entry.type == FS_DIR_ENTRY_DIR) {
       struct directory_entries dir;
       memcpy(dir.name, entry.name, MAX_FILE_NAME);
-      printk("\t%s\n",entry.name);
+      printk("\t%s\n", entry.name);
       SDCard::dir_list[dir_count++] = dir;
     }
     count++;
@@ -478,4 +423,11 @@ int SDCard::get_dirs(const char *path) {
   }
 
   return res;
+}
+void SDCard::time_str(char buf[9], uint32_t time) {
+  memset(buf, 0, 9);
+  auto hours = time / 3600;
+  auto minutes = (time % 3600) / 60;
+  auto seconds = time % 60;
+  sprintf(buf, "%02d:%02d:%02d", hours, minutes, seconds);
 }

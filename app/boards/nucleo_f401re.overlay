@@ -11,31 +11,49 @@
     status = "okay";
 };
 
-&spi1 {
-    dmas = <&dma2 0 3 (STM32_DMA_PERIPH_RX | STM32_DMA_PRIORITY_HIGH) STM32_DMA_FIFO_1_4>,
-           <&dma2 3 3 (STM32_DMA_PERIPH_TX | STM32_DMA_PRIORITY_HIGH) STM32_DMA_FIFO_1_4>;
-    dma-names = "rx", "tx";
-
-    sdhc0: sdhc@0 {
-        compatible = "zephyr,sdhc-spi-slot";
-        reg = <0>;
-        status = "okay";
-        spi-max-frequency = <10000000>;
-
-        /* 3 (0/2) RX 3 (3/5) TX */
-        mmc {
-            compatible = "zephyr,sdmmc-disk";
-            disk-name = "SD";
-            status = "okay";
-        };
-    };
+&sdmmc1 {
+    status = "okay";
+    pinctrl-0 = <&sdio_d0_pc8
+                 &sdio_d1_pc9
+                 &sdio_d2_pc10
+                 &sdio_d3_pc11
+                 &sdio_ck_pc12
+                 &sdio_cmd_pd2>;
+    pinctrl-names = "default";
+    /* cd-gpios = <&gpiob 14 GPIO_ACTIVE_LOW>; */
+    // Change later when on pcb
+    bus-width = <1>;
+    disk-name = "SD";
+    clk-div = <0>;
 };
+/* &spi1 { */
+/*     dmas = <&dma2 0 3 (STM32_DMA_PERIPH_RX | STM32_DMA_PRIORITY_HIGH) STM32_DMA_FIFO_1_4>, */
+/*            <&dma2 3 3 (STM32_DMA_PERIPH_TX | STM32_DMA_PRIORITY_HIGH) STM32_DMA_FIFO_1_4>; */
+/*     dma-names = "rx", "tx"; */
+/**/
+/*     sdhc0: sdhc@0 { */
+/*         compatible = "zephyr,sdhc-spi-slot"; */
+/*         reg = <0>; */
+/*         status = "okay"; */
+/*         spi-max-frequency = <25000000>; */
+/**/
+/*         /* 3 (0/2) RX 3 (3/5) TX */
+/*         mmc { */
+/*             compatible = "zephyr,sdmmc-disk"; */
+/*             disk-name = "SD"; */
+/*             status = "okay"; */
+/*         }; */
+/*     }; */
+/* }; */
 
 &spi2 {
     pinctrl-0 = <&spi2_sck_pb10 &spi2_miso_pc2 &spi2_mosi_pc3>;
     pinctrl-names = "default";
     status = "okay";
     cs-gpios = <&gpiob 9 GPIO_ACTIVE_LOW>; 
+    dmas = <&dma1 4 0 (STM32_DMA_PERIPH_TX | STM32_DMA_PRIORITY_HIGH) STM32_DMA_FIFO_FULL>,
+           <&dma1 3 0 (STM32_DMA_PERIPH_RX | STM32_DMA_PRIORITY_HIGH) STM32_DMA_FIFO_FULL>;
+    dma-names = "tx", "rx";
 };
 
 / {
@@ -105,13 +123,13 @@
         compatible = "gpio-keys";
 
         select_pin: select_pin {
-            gpios = <&st_morpho_header ST_MORPHO_L_3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+            gpios = <&gpioa 8 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
             label = "Select";
             zephyr,code = <INPUT_KEY_0>;
         };
 
         scroll_pin: scroll_pin {
-            gpios = <&st_morpho_header ST_MORPHO_L_1 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+            gpios = <&gpioa 9 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
             label = "Scroll";
             zephyr,code = <INPUT_KEY_1>;
         };

@@ -6,12 +6,13 @@
 #include <zephyr/fs/fs.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/storage/disk_access.h>
+#include <zephyr/sys/atomic.h>
 
 #define DISK_DRIVE_NAME "SD"
 #define MAX_PATH 128
 #define FS_RET_OK FR_OK
 #define DISK_MOUNT_PT "/" DISK_DRIVE_NAME ":"
-#define MAX_DIRS 64
+#define MAX_DIRS 16
 #define MAX_FILES 64
 
 class SDCard {
@@ -53,6 +54,12 @@ public:
 
   inline static directory_entries dir_list[MAX_DIRS];
   inline static uint8_t dir_count = 0;
-  inline static file_entries file_list[MAX_DIRS];
+  inline static file_entries file_list[MAX_FILES];
   inline static uint8_t file_count = 0;
+  // --- TIME IN S ---
+  inline static struct k_sem header_ready;
+  inline static atomic_t total_time = ATOMIC_INIT(0);
+  inline static atomic_t elapsed_time = ATOMIC_INIT(0);
+  static void time_str(char buf[9], uint32_t time);
+  // -----------------
 };
