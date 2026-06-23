@@ -24,7 +24,7 @@
     // Change later when on pcb
     bus-width = <1>;
     disk-name = "SD";
-    clk-div = <0>;
+    clk-div = <1>;
 };
 /* &spi1 { */
 /*     dmas = <&dma2 0 3 (STM32_DMA_PERIPH_RX | STM32_DMA_PRIORITY_HIGH) STM32_DMA_FIFO_1_4>, */
